@@ -112,8 +112,6 @@ def affine_detect(detector, img, pool=None):
         keypoints.extend(k)
         descrs.extend(d)
 
-    print()
-
     return keypoints, np.array(descrs)
 
 
