@@ -1,0 +1,35 @@
+{
+	"traceEvents": [
+		{ "ph": "M", "pid": 34244, "tid": 34244, "name": "process_name", "args": { "name": "MainProcess" } },
+		{ "ph": "M", "pid": 34244, "tid": 16140, "name": "thread_name", "args": { "name": "MainThread" } },
+		{
+			"pid": 34244,
+			"tid": 16140,
+			"ts": 96096073939.786,
+			"ph": "X",
+			"cat": "fee",
+			"dur": 0.4,
+			"name": "run_while (C:\\Users\\user\\Desktop\\Scripts\\walrus_loop.py:1)"
+		},
+		{
+			"pid": 34244,
+			"tid": 16140,
+			"ts": 96096073938.886,
+			"ph": "X",
+			"cat": "fee",
+			"dur": 1.6,
+			"name": "<module> (C:\\Users\\user\\Desktop\\Scripts\\walrus_loop.py:1)"
+		},
+		{ "pid": 34244, "tid": 16140, "ts": 96096073938.086, "ph": "X", "cat": "fee", "dur": 2.7, "name": "builtins.exec" }
+	],
+	"viztracer_metadata": { "overflow": false, "version": "1.1.1" },
+	"file_info": {
+		"files": {
+			"C:\\Users\\user\\Desktop\\Scripts\\walrus_loop.py": ["def run_while():\n    i = 0\n    while (i := i + 1) < 3:\n        a = i\n\n\nrun_while()\n", 7]
+		},
+		"functions": {
+			"run_while (C:\\Users\\user\\Desktop\\Scripts\\walrus_loop.py:1)": ["C:\\Users\\user\\Desktop\\Scripts\\walrus_loop.py", 1],
+			"<module> (C:\\Users\\user\\Desktop\\Scripts\\walrus_loop.py:1)": ["C:\\Users\\user\\Desktop\\Scripts\\walrus_loop.py", 1]
+		}
+	}
+}
