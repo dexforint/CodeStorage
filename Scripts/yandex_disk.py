@@ -33,6 +33,9 @@ def list_files(path=APP_ROOT):
     return items
 
 
+# print(list_files())
+
+
 def delete(remote_path, permanently=False):
     """Удалить файл или папку."""
     r = requests.delete(
@@ -68,7 +71,7 @@ def upload_file(local_path, remote_path=None):
 
 
 # Примеры:
-# upload_file("test_file.txt")
+upload_file("test_file.txt")
 # upload_file('report.xlsx', 'app:/data/report.xlsx')
 
 
@@ -142,5 +145,3 @@ def download_file(remote_path, save_path):
 
 
 download_file("app:/test_file.txt", "test_file_downloaded.txt")
-
-# print(list_files())
