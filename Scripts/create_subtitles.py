@@ -4,14 +4,14 @@ from faster_whisper import WhisperModel
 from tqdm.auto import tqdm
 
 # Автовыбор устройства
-# device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
-device = "cpu"
-compute_type = "float16" if device == "cuda" else "float32"
+device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+# device = "cpu"
+compute_type = "float16" if device == "cuda" else "int8"
 
 model = WhisperModel(
     "deepdml/faster-whisper-large-v3-turbo-ct2",
     device=device,
-    compute_type="int8",
+    compute_type=compute_type,
 )
 
 
@@ -87,7 +87,7 @@ def create_english_subtitles(video_path: str) -> str:
 if __name__ == "__main__":
     from glob import glob
 
-    paths = glob(r"C:\Users\user\Downloads\archive-2026-03-16_20-17-56\archive\*.mp4")
+    paths = glob(r"./data/*.mp4")
     paths = [path.replace("\\", "/") for path in paths]
     paths.sort()
 

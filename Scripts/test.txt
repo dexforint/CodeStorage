@@ -1,0 +1,6 @@
+# https://arena.ai/c/019d008e-8c68-78ee-a0b3-3fc9e9c80359
+# лучше создать виртуальное окружение
+# python -m venv venv
+# venv/Scripts/activate
+# нужно установить актуальный Pytorch с оф. сайта
+# pip install pyannote.audio soundfile pydub numpy python-dotenv
