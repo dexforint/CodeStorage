@@ -87,9 +87,10 @@ def create_english_subtitles(video_path: str) -> str:
 if __name__ == "__main__":
     from glob import glob
 
-    paths = glob(r"C:\Users\user\Downloads\4 - The AI LLM Landscape today/*.mp4")
+    paths = glob(r"C:\Users\user\Downloads\2 The Premiere Pro Masterclas\*.mp4")
     paths = [path.replace("\\", "/") for path in paths]
     paths.sort()
+    print("paths:", paths)
 
     for i, path in enumerate(paths):
         print(i + 1, "/", len(paths))
