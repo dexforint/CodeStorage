@@ -1,6 +1,6 @@
 import yt_dlp
 
-url = "https://www.youtube.com/watch?v=9xeSBvzU6j8"
+url = "https://www.youtube.com/watch?v=Xo2tJpqgmXM"
 
 # Только субтитры (без видео)
 ydl_opts = {
