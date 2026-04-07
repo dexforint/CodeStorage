@@ -20,7 +20,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ENDPOINT_URL = "https://s3.ru-7.storage.selcloud.ru:443"
 BUCKET_NAME = "train-expds-2"
 LOCAL_DIR = "./data/upgreat"
-LOG_FILE = "download.log"
+LOG_FILE = "./data/download.log"
 
 # Multipart transfer settings for large files.
 # use_threads=False is critical: setting it True spawns a nested thread pool
