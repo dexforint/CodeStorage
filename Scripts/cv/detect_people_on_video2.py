@@ -30,7 +30,7 @@ class MaximumQualityDetector:
     """
 
     def __init__(self):
-        self.model_name = "yolo11x.pt"
+        self.model_name = "yolo12x.pt"
         self.imgsz = 1280
         self.first_pass_conf = 0.15
         self.second_pass_conf = 0.12
