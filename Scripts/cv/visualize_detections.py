@@ -1,220 +1,197 @@
-#!/usr/bin/env python3
 """
-Визуализатор результатов детекции YOLO
-
-Принимает:
-    - исходное видео
-    - JSON-файл с результатами детекции (из MaximumQualityDetector)
-
-Создаёт:
-    - новое видео с отрисованными bounding box, track_id и confidence
+Визуализация результатов детекции из нескольких источников.
+Каждая папка с разметкой рисуется своим цветом.
+Поддерживает изображения и видео.
 """
 
 import argparse
-import json
+import logging
 from pathlib import Path
-from typing import Any, Dict
-
+from typing import Dict, List, Tuple, Union
+from tqdm import tqdm
 import cv2
-import numpy as np
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
-def load_detections(json_path: Path) -> Dict[int, list[dict]]:
-    """
-    Загружает результаты детекции из JSON-файла.
-    Возвращает словарь: {frame_id: [list of detections]}
-    """
-    with open(json_path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    detections_per_frame = data.get("detections_per_frame", {})
-
-    # Приводим строковые ключи к int
-    result: Dict[int, list[dict]] = {}
-    for frame_str, dets in detections_per_frame.items():
-        result[int(frame_str)] = dets
-
-    print(f"Загружено детекций для {len(result)} кадров из файла {json_path.name}")
-    return result
+# Цвета по умолчанию
+DEFAULT_COLORS = ["lime", "red", "cyan", "yellow", "magenta", "blue", "white"]
 
 
-def get_unique_color(track_id: int) -> tuple[int, int, int]:
-    """
-    Генерирует уникальный яркий цвет для каждого track_id.
-    Один и тот же трек всегда будет одного цвета.
-    """
-    # Используем HSV цветовое пространство для хорошего распределения цветов
-    hue = (track_id * 137) % 360  # 137 — простое число, даёт хорошее распределение
-    saturation = 255
-    value = 255
-    color_bgr = cv2.cvtColor(
-        np.array([[[hue, saturation, value]]], dtype=np.uint8), cv2.COLOR_HSV2BGR
-    )
-    return int(color_bgr[0][0][0]), int(color_bgr[0][0][1]), int(color_bgr[0][0][2])
+def parse_color(color_str: str) -> Tuple[int, int, int]:
+    """Преобразует строку цвета в BGR."""
+    color_map = {
+        "red": (0, 0, 255),
+        "green": (0, 255, 0),
+        "blue": (255, 0, 0),
+        "lime": (0, 255, 0),
+        "cyan": (255, 255, 0),
+        "yellow": (0, 255, 255),
+        "magenta": (255, 0, 255),
+        "white": (255, 255, 255),
+        "black": (0, 0, 0),
+    }
+    if color_str.lower() in color_map:
+        return color_map[color_str.lower()]
+    # Если RGB в формате "255,0,0"
+    try:
+        r, g, b = map(int, color_str.split(","))
+        return (b, g, r)  # OpenCV использует BGR
+    except:
+        return (0, 255, 0)  # fallback
 
 
-def draw_detection(
-    frame: np.ndarray,
-    det: dict,
-    color: tuple[int, int, int],
-    thickness: int = 3,
-    show_confidence: bool = True,
-    font_scale: float = 0.7,
-) -> None:
-    """
-    Рисует один bounding box с подписью на кадре.
-    """
-    bbox = det["bbox"]
-    x1, y1, x2, y2 = map(int, bbox)
-    track_id = det.get("track_id")
-    confidence = det.get("confidence", 0.0)
-
-    # Рамка
-    cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
-
-    # Подпись
-    label_parts = []
-    if track_id is not None:
-        label_parts.append(f"ID:{track_id}")
-    if show_confidence:
-        label_parts.append(f"{confidence:.2f}")
-
-    label = " | ".join(label_parts)
-
-    # Добавляем фон под текст для читаемости
-    (text_width, text_height), baseline = cv2.getTextSize(
-        label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 2
-    )
-
-    # Позиция текста (над боксом)
-    text_x = x1
-    text_y = max(y1 - 10, text_height + 5)
-
-    # Полупрозрачный фон
-    cv2.rectangle(
-        frame,
-        (text_x - 2, text_y - text_height - 5),
-        (text_x + text_width + 2, text_y + 5),
-        color,
-        -1,
-    )
-
-    # Сам текст (белый)
-    cv2.putText(
-        frame,
-        label,
-        (text_x, text_y),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        font_scale,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
-
-
-def visualize(
-    video_path: Path,
-    json_path: Path,
+def visualize_image(
+    image_path: Path,
+    label_sources: List[Tuple[Path, Tuple[int, int, int]]],
     output_path: Path,
-    thickness: int = 4,
-    font_scale: float = 0.8,
-    show_confidence: bool = True,
-    fourcc: str = "mp4v",
-) -> None:
-    """
-    Основная функция визуализации.
-    """
-    # Загружаем результаты детекции
-    detections_dict = load_detections(json_path)
+):
+    """Рисует боксы из нескольких источников на одном изображении."""
+    img = cv2.imread(str(image_path))
+    if img is None:
+        logger.warning(f"Не удалось прочитать {image_path.name}")
+        return
 
-    # Открываем видео
+    h, w = img.shape[:2]
+
+    for label_dir, color in label_sources:
+        label_path = label_dir / f"{image_path.stem}.txt"
+        if not label_path.exists():
+            continue
+
+        with open(label_path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) < 5:
+                    continue
+                conf = float(parts[0])
+                cx, cy, bw, bh = map(float, parts[1:5])
+
+                x1 = int((cx - bw / 2) * w)
+                y1 = int((cy - bh / 2) * h)
+                x2 = int((cx + bw / 2) * w)
+                y2 = int((cy + bh / 2) * h)
+
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
+                cv2.putText(
+                    img,
+                    f"{conf:.2f}",
+                    (x1, max(y1 - 8, 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    color,
+                    2,
+                )
+
+    cv2.imwrite(str(output_path), img)
+
+
+def visualize_video(
+    video_path: Path,
+    label_sources: List[Tuple[Path, Tuple[int, int, int]]],
+    output_path: Path,
+):
+    """Создаёт видео с боксами из нескольких источников."""
     cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise IOError(f"Не удалось открыть видео: {video_path}")
-
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Настройка записи видео
-    fourcc_codec = cv2.VideoWriter_fourcc(*fourcc)
-    out = cv2.VideoWriter(str(output_path), fourcc_codec, fps, (width, height))
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
 
-    print(f"Начало визуализации: {video_path.name}")
-    print(f"Выходной файл: {output_path.name}")
-    print(f"Разрешение: {width}x{height}, FPS: {fps:.2f}, Кадров: {total_frames}")
+    logger.info(f"Визуализация видео ({len(label_sources)} источников)...")
 
-    frame_id = 0
-    while True:
+    for frame_idx in tqdm(range(frame_count), desc="Кадры"):
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Получаем детекции для текущего кадра
-        current_detections = detections_dict.get(frame_id, [])
-
-        for det in current_detections:
-            track_id = det.get("track_id")
-            color = get_unique_color(track_id) if track_id is not None else (0, 255, 0)
-
-            draw_detection(
-                frame=frame,
-                det=det,
-                color=color,
-                thickness=thickness,
-                show_confidence=show_confidence,
-                font_scale=font_scale,
-            )
+        for label_dir, color in label_sources:
+            label_path = label_dir / f"frame_{frame_idx:06d}.txt"
+            if not label_path.exists():
+                continue
+            h, w = frame.shape[:2]
+            with open(label_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) < 5:
+                        continue
+                    conf = float(parts[0])
+                    cx, cy, bw, bh = map(float, parts[1:5])
+                    x1 = int((cx - bw / 2) * w)
+                    y1 = int((cy - bh / 2) * h)
+                    x2 = int((cx + bw / 2) * w)
+                    y2 = int((cy + bh / 2) * h)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+                    cv2.putText(
+                        frame,
+                        f"{conf:.2f}",
+                        (x1, max(y1 - 10, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        color,
+                        2,
+                    )
 
         out.write(frame)
-        frame_id += 1
-
-        if frame_id % 500 == 0:
-            print(f"Обработано кадров: {frame_id}/{total_frames}")
 
     cap.release()
     out.release()
-    print("Визуализация успешно завершена!")
+    logger.info(f"Видео сохранено: {output_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Визуализатор результатов YOLO детекции",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Визуализация нескольких источников детекции"
     )
-    parser.add_argument("video", type=Path, help="Путь к исходному видео")
-    parser.add_argument("json", type=Path, help="Путь к JSON-файлу с детекциями")
     parser.add_argument(
-        "-o",
+        "--source", type=Path, required=True, help="Папка с изображениями или видеофайл"
+    )
+    parser.add_argument(
+        "--label-sources",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Список в формате: folder_path:color (например: results_yolo:lime results_dino:red)",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
-        default=None,
-        help="Путь к выходному видео (по умолчанию: video_detected.mp4)",
-    )
-    parser.add_argument("--thickness", type=int, default=4, help="Толщина рамки")
-    parser.add_argument("--font-scale", type=float, default=0.75, help="Размер шрифта")
-    parser.add_argument(
-        "--no-confidence", action="store_true", help="Не показывать confidence"
+        required=True,
+        help="Папка для изображений или путь к видео (.mp4)",
     )
 
     args = parser.parse_args()
 
-    if not args.video.exists():
-        parser.error(f"Видео не найдено: {args.video}")
-    if not args.json.exists():
-        parser.error(f"JSON-файл не найден: {args.json}")
+    # Парсим label-sources
+    label_sources: List[Tuple[Path, Tuple[int, int, int]]] = []
+    for item in args.label_sources:
+        if ":" not in item:
+            logger.error(f"Неверный формат: {item}. Ожидается path:color")
+            continue
+        path_str, color_str = item.split(":", 1)
+        label_sources.append((Path(path_str), parse_color(color_str)))
 
-    output = args.output or args.video.with_name(f"{args.video.stem}_detected.mp4")
+    if not label_sources:
+        logger.error("Не указано ни одного источника разметки")
+        return
 
-    visualize(
-        video_path=args.video,
-        json_path=args.json,
-        output_path=output,
-        thickness=args.thickness,
-        font_scale=args.font_scale,
-        show_confidence=not args.no_confidence,
-    )
+    logger.info(f"Визуализируем {len(label_sources)} источников разметки.")
+
+    if args.source.is_dir():
+        args.output.mkdir(parents=True, exist_ok=True)
+        img_paths = list(args.source.glob("*.jpg")) + list(args.source.glob("*.png"))
+        for img_path in tqdm(img_paths, desc="Визуализация изображений"):
+            visualize_image(img_path, label_sources, args.output / img_path.name)
+    else:
+        visualize_video(args.source, label_sources, args.output)
+
+    logger.info("Визуализация завершена.")
 
 
 if __name__ == "__main__":
