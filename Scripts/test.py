@@ -1,23 +1,35 @@
 from openai import OpenAI
 
-client = OpenAI(
-    base_url="https://aihubmix.com/v1",
-    api_key="sk-ykEuMBKUQLwr3xdDEa44Db2c33054bCc81C1E1AbDe1513Fb",
-)
+# Подключаемся к локальной Ollama
+# api_key может быть любым (например, "ollama"),
+# так как локальная модель не требует авторизации,
+# но параметр обязателен для клиента OpenAI.
+client = OpenAI(base_url="http://localhost:11434/v1/", api_key="ollama")
 
-completion = client.chat.completions.create(
-    model="claude-opus-4-7-think",
-    messages=[
-        {
-            "role": "assistant",
-            "content": "Provide helpful, friendly, and well-structured answers.",
-        },
-        {
-            "role": "user",
-            "content": "I'm visiting US for 7 days. Can you help me plan a simple travel itinerary?",
-        },
-    ],
-    #   max_tokens=10000, # Defaults to 4096 for OpenAI compatible interface; enable this parameter for longer text generation
-)
+# Имя модели, которую вы скачали (можно посмотреть командой ollama list)
+model_name = "qwen3.6:latest"
 
-print(completion.choices[0].message.content)
+
+print(f"Отправка запроса к модели {model_name}...\n")
+
+try:
+    # Делаем запрос к модели (Chat Completions)
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {
+                "role": "user",
+                "content": "Почему небо голубое? Ответь в двух предложениях.",
+            },
+        ],
+        temperature=0.7,
+        max_tokens=150,
+    )
+
+    # Выводим ответ
+    answer = response.choices[0].message.content
+    print("Ответ модели:")
+    print(answer)
+
+except Exception as e:
+    print(f"Произошла ошибка: {e}")

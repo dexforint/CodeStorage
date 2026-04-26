@@ -1,27 +1,35 @@
 from openai import OpenAI
 
-client = OpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="ollama",  # любое значение
-)
+# Подключаемся к локальной Ollama
+# api_key может быть любым (например, "ollama"),
+# так как локальная модель не требует авторизации,
+# но параметр обязателен для клиента OpenAI.
+client = OpenAI(base_url="http://localhost:11434/v1/", api_key="ollama")
 
-stream = client.chat.completions.create(
-    model="glm-4.7-flash",
-    messages=[
-        {"role": "system", "content": "Отвечай кратко."},
-        {
-            "role": "user",
-            "content": "Напиши короткий пример кода на Python и поясни его.",
-        },
-    ],
-    temperature=0.2,
-    stream=True,
-)
+# Имя модели, которую вы скачали (можно посмотреть командой ollama list)
+model_name = "gemma4:latest"
 
-for event in stream:
-    # В стриме приходят чанки; текст обычно лежит в delta.content
-    delta = event.choices[0].delta
-    if delta and delta.content:
-        print(delta.content, end="", flush=True)
+print(f"Отправка запроса к модели {model_name}...\n")
 
-print()  # перевод строки в конце
+try:
+    # Делаем запрос к модели (Chat Completions)
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {
+                "role": "user",
+                "content": "Почему небо голубое? Ответь в двух предложениях.",
+            },
+        ],
+        temperature=0.7,
+        max_tokens=10000,
+    )
+
+    # Выводим ответ
+    # print("response:", response)
+    answer = response.choices[0].message.content
+    print("Ответ модели:")
+    print(answer)
+
+except Exception as e:
+    print(f"Произошла ошибка: {e}")
