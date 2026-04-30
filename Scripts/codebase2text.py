@@ -8,7 +8,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional, Tuple, List
 
-
 # ------------------------- defaults -------------------------
 
 DEFAULT_HIDE_IN_TREE = [
@@ -537,7 +536,10 @@ def codebase_folder_to_llm_text(
             path = out_base_dir / f"{root.name}.txt"
         else:
             path = out_base_dir / f"{root.name}__part{idx:03d}.txt"
-        path.write_text(content.rstrip() + "\n", encoding="utf-8")
+
+        # Важно: newline="\n" отключает преобразование \n -> \r\n на Windows
+        with path.open("w", encoding="utf-8", newline="\n") as f:
+            f.write(content.rstrip() + "\n")
         return path
 
     if max_output_chars is None:
@@ -617,9 +619,7 @@ def codebase_folder_to_llm_text(
             part_paths.append(write_part(part_idx, cur.getvalue()))
 
     # 6) Included files list
-    included_list_path.write_text(
-        "\n".join(included_content_files).rstrip() + "\n",
-        encoding="utf-8",
-    )
+    with included_list_path.open("w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(included_content_files).rstrip() + "\n")
 
     return part_paths, included_list_path
