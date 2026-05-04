@@ -153,13 +153,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # main()
-    print("🔒 Шифрование: .env")
-    password = ask_password(confirm=True)  # при шифровании — подтверждение
-
-    try:
-        result = encrypt_file(Path("./.env"), password)
-    except FileExistsError as e:
-        print(f"❌ {e}", file=sys.stderr)
-        sys.exit(1)
-    print(f"✅ Зашифрованный файл: {result}")
+    main()
