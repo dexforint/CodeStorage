@@ -1,54 +1,81 @@
-import yt_dlp
-import re
 import os
-import glob
+import re
+import yt_dlp
 
-url = "https://www.youtube.com/watch?v=SKI6pf0gkNo"
+URL = "https://www.youtube.com/watch?v=SKI6pf0gkNo"
+LANG = "ru"
+
+
+def srt_to_plain_text(srt_path: str) -> str:
+    """
+    Превращает .srt в чистый текст:
+    - удаляет номера блоков
+    - удаляет строки с таймкодами
+    - склеивает текст
+    - убирает подряд идущие дубликаты строк (часто бывает из-за перекрытия субтитров)
+    """
+    timecode_re = re.compile(
+        r"^\d{2}:\d{2}:\d{2}[,.]\d{3}\s-->\s\d{2}:\d{2}:\d{2}[,.]\d{3}"
+    )
+    index_re = re.compile(r"^\d+$")
+
+    lines_out = []
+    last_line = None
+
+    with open(srt_path, "r", encoding="utf-8", errors="ignore") as f:
+        for raw in f:
+            line = raw.strip()
+
+            if not line:
+                continue
+            if index_re.match(line):
+                continue
+            if timecode_re.match(line):
+                continue
+
+            # часто встречаются служебные теги в некоторых субтитрах
+            line = re.sub(r"<[^>]+>", "", line).strip()
+            if not line:
+                continue
+
+            # убираем подряд идущие дубликаты
+            if line == last_line:
+                continue
+
+            lines_out.append(line)
+            last_line = line
+
+    # Склеиваем в один текст (можно заменить на '\n' если нужны абзацы)
+    text = " ".join(lines_out)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
 
 ydl_opts = {
     "skip_download": True,
-    "writesubtitles": True,
-    "writeautomaticsub": True,
-    "subtitleslangs": ["ru"],
-    "subtitlesformat": "vtt",  # Используем VTT, так как его легко парсить
-    "outtmpl": "%(title)s.%(ext)s",
+    "writesubtitles": True,  # ручные
+    "writeautomaticsub": True,  # авто
+    "subtitleslangs": [LANG],
+    "subtitlesformat": "srt",  # важно: srt/vtt удобнее парсить, чем "txt"
+    "outtmpl": "./data/%(title)s.%(ext)s",
+    "quiet": True,
 }
 
-
-def clean_vtt_to_text(vtt_filepath):
-    """Функция для очистки VTT файла до чистого текста"""
-    with open(vtt_filepath, "r", encoding="utf-8") as f:
-        text = f.read()
-
-    # Удаляем заголовок WEBVTT
-    text = re.sub(r"^WEBVTT.*\n", "", text, flags=re.MULTILINE)
-    # Удаляем таймкоды (например: 00:00:00.000 --> 00:00:02.000)
-    text = re.sub(
-        r"\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}.*\n", "", text
-    )
-    text = re.sub(
-        r"\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}\.\d{3}.*\n", "", text
-    )  # Короткие таймкоды
-    # Удаляем HTML-подобные теги (например <c> или </c>, которые бывают в автосабах)
-    text = re.sub(r"<[^>]+>", "", text)
-    # Удаляем пустые строки и лишние переносы, превращая в сплошной текст
-    text = re.sub(r"\n+", " ", text)
-
-    # Перезаписываем тот же файл, но уже с чистым текстом
-    new_filepath = vtt_filepath.replace(".vtt", ".txt")
-    with open(new_filepath, "w", encoding="utf-8") as f:
-        f.write(text.strip())
-
-    # Удаляем оригинальный грязный vtt файл
-    os.remove(vtt_filepath)
-    print(f"Сохранен чистый текст: {new_filepath}")
-
-
-# Скачиваем с помощью yt-dlp
 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-    ydl.download([url])
+    info = ydl.extract_info(URL, download=True)
 
-# Ищем скачанный .vtt файл и очищаем его
-vtt_files = glob.glob("*.ru.vtt")
-for vtt_file in vtt_files:
-    clean_vtt_to_text(vtt_file)
+    # Базовое имя, которое yt-dlp использует для файлов
+    base = os.path.splitext(ydl.prepare_filename(info))[0]
+
+    # yt-dlp обычно сохраняет как "<base>.<lang>.srt"
+    srt_path = f"{base}.{LANG}.srt"
+    if not os.path.exists(srt_path):
+        raise FileNotFoundError(f"Не найден файл субтитров: {srt_path}")
+
+    plain_text = srt_to_plain_text(srt_path)
+
+    txt_path = f"{base}.{LANG}.txt"
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(plain_text)
+
+print("Готово:", txt_path)
