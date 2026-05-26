@@ -68,6 +68,8 @@ def visualize_image(
                 if len(parts) < 5:
                     continue
                 conf = float(parts[0])
+                if conf < 0.4:
+                    continue
                 cx, cy, bw, bh = map(float, parts[1:5])
 
                 x1 = int((cx - bw / 2) * w)
@@ -122,6 +124,8 @@ def visualize_video(
                     if len(parts) < 5:
                         continue
                     conf = float(parts[0])
+                    if conf < 0.4:
+                        continue
                     cx, cy, bw, bh = map(float, parts[1:5])
                     x1 = int((cx - bw / 2) * w)
                     y1 = int((cy - bh / 2) * h)

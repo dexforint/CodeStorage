@@ -37,7 +37,7 @@ def initialize_model() -> YOLO:
         logger.warning("CUDA недоступен. Работаем на CPU.")
 
     # model = YOLO("yolo11x.pt")
-    model = YOLO("./data/yolov8n.pt")
+    model = YOLO("./data/yolov8s.pt")
     model.to(device)
     logger.info("Модель успешно загружена.")
     return model
