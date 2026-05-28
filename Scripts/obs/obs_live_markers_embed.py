@@ -3,14 +3,15 @@
 """
 obs_live_markers_embed.py
 
-- OBS пишет mp4
+- OBS пишет MP4
 - во время записи ставим маркеры горячими клавишами
 - после Stop Recording:
   - получаем путь к файлу через событие RecordStateChanged (outputPath)
     (fallback: ищем самый новый mp4 в папке записи)
-  - переводим секунды в кадры по реальному FPS файла
+  - переводим секунды в кадры по реальному FPS файла (ffprobe)
   - встраиваем маркеры в MP4 через XMP (xmpDM:Tracks) используя ExifTool
-  - сохраняем *.markers.json рядом с видео
+  - JSON со списком маркеров сохраняется во временную папку (TEMP)
+    и удаляется после успешного embed (если embed упал — JSON останется в TEMP)
 
 Hotkeys:
   F8        - segment toggle (IN/OUT) -> Segmentation marker (duration)
@@ -18,8 +19,15 @@ Hotkeys:
 
 Deps:
   pip install lxml pynput obsws-python
+
 Needs in PATH:
   exiftool, ffprobe
+
+Run:
+  python obs_live_markers_embed.py --password "nikola3325tesla"
+or:
+  setx OBS_WS_PASSWORD "nikola3325tesla"
+  python obs_live_markers_embed.py
 """
 
 import os
@@ -30,6 +38,7 @@ import queue
 import argparse
 import threading
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Optional, List
@@ -99,11 +108,9 @@ def xmp_extract_xmpmeta_only(xmp_packet: bytes) -> Optional[bytes]:
 
 def create_xmp_skeleton() -> etree._Element:
     """
-    Если в mp4 нет XMP вообще — создаём минимальный корректный контейнер,
-    чтобы Premiere увидел xmpDM:Tracks.
+    Если в MP4 нет XMP вообще — создаём минимальный корректный контейнер,
+    затем вставляем xmpDM:Tracks.
     """
-    # Важно: nsmap задаём сразу с нужными префиксами (rdf/xmp/xmpDM/xmpMM),
-    # чтобы сериализация получилась "читаемой" и похожей на Adobe.
     xmpmeta = etree.Element(
         q("x", "xmpmeta"),
         nsmap={
@@ -185,7 +192,7 @@ def build_tracks_element(
     markers: List[XmpMarker], frame_rate_code: str
 ) -> etree._Element:
     """
-    Один track "Comment" (как часто делает Premiere),
+    Один track "Comment" (часто так делает Premiere),
     а тип маркера, если надо, кладём в xmpDM:type.
     """
     tracks = etree.Element(q("xmpDM", "Tracks"))
@@ -234,7 +241,6 @@ def replace_tracks_in_xmp(
 ) -> etree._Element:
     desc = xmpmeta.find(".//rdf:Description", namespaces=NS)
     if desc is None:
-        # если вдруг создали скелет криво или получили неожиданную структуру
         raise RuntimeError("No rdf:Description found in XMP")
 
     old_tracks = desc.find("xmpDM:Tracks", namespaces=NS)
@@ -253,10 +259,6 @@ def replace_tracks_in_xmp(
 
 
 def load_xmpmeta_or_create(video_path: str, exiftool: str) -> etree._Element:
-    """
-    1) пытаемся извлечь существующий XMP
-    2) если XMP нет — создаём скелет
-    """
     pkt = exiftool_extract_xmp(video_path, exiftool=exiftool)
     xmpmeta_bytes = xmp_extract_xmpmeta_only(pkt)
 
@@ -347,7 +349,7 @@ def find_latest_mp4(record_dir: str, after_ts: float) -> Optional[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Logged markers
+# Logged markers + temp JSON
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -358,6 +360,21 @@ class LoggedMarker:
     duration_sec: float = 0.0
     name: str = ""
     comment: str = ""
+
+
+def save_markers_json_temp(logged: List[LoggedMarker], video_path: str) -> str:
+    """
+    Сохраняет маркеры во временную папку. Удаляется после успешного embed.
+    Если embed упадёт — путь к JSON будет выведен, файл останется как бэкап.
+    """
+    base = os.path.splitext(os.path.basename(video_path))[0]
+    fname = f"{base}.{uuid.uuid4().hex}.markers.json"
+    path = os.path.join(tempfile.gettempdir(), fname)
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump([lm.__dict__ for lm in logged], f, ensure_ascii=False, indent=2)
+
+    return path
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -371,7 +388,11 @@ def main():
     ap.add_argument("--port", type=int, default=4455)
     ap.add_argument("--password", default="nikola3325tesla")
     ap.add_argument("--exiftool", default="exiftool")
-    ap.add_argument("--no-embed", action="store_true")
+    ap.add_argument(
+        "--no-embed",
+        action="store_true",
+        help="Не встраивать XMP (оставить только temp JSON)",
+    )
     args = ap.parse_args()
 
     if not args.password:
@@ -529,22 +550,19 @@ def main():
                 video_path = os.path.normpath(video_path)
                 print(f"[REC] stopped. file={video_path}")
 
-                # JSON рядом
-                json_path = os.path.splitext(video_path)[0] + ".markers.json"
-                with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        [lm.__dict__ for lm in logged], f, ensure_ascii=False, indent=2
-                    )
-                print(f"JSON маркеров: {json_path}")
+                # temp JSON (бэкап)
+                json_path = save_markers_json_temp(logged, video_path)
+                print(f"Markers JSON (temp): {json_path}")
 
                 if args.no_embed:
-                    print("Встраивание отключено (--no-embed).")
+                    print("Embed отключён (--no-embed). JSON оставлен в TEMP.")
                     break
 
                 wait_file_stable(video_path)
 
                 fps = ffprobe_fps_fraction(video_path)
                 xmp_markers: List[XmpMarker] = []
+
                 for lm in logged:
                     start_fr = sec_to_frames(lm.start_sec, fps)
                     dur_fr = (
@@ -563,8 +581,23 @@ def main():
                         )
                     )
 
-                embed_markers_into_mp4(video_path, xmp_markers, exiftool=args.exiftool)
-                print("OK: маркеры встроены в MP4. Импортируй файл в Premiere.")
+                try:
+                    embed_markers_into_mp4(
+                        video_path, xmp_markers, exiftool=args.exiftool
+                    )
+                    print("OK: маркеры встроены в MP4. Импортируй файл в Premiere.")
+
+                    # успех -> удаляем temp JSON
+                    try:
+                        os.remove(json_path)
+                    except OSError:
+                        pass
+
+                except Exception as e:
+                    print(f"ERROR: не удалось встроить маркеры: {e}")
+                    print(f"JSON оставлен в TEMP: {json_path}")
+                    raise
+
                 break
 
             time.sleep(0.2)
