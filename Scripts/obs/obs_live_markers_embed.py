@@ -3,29 +3,31 @@
 """
 obs_live_markers_embed.py
 
-Сценарий:
-- OBS пишет видео (mp4).
-- Во время записи ты ставишь маркеры горячими клавишами.
-- После Stop Recording скрипт:
-  1) получает путь к итоговому файлу через событие RecordStateChanged (outputPath),
-     а если не получилось — ищет самый свежий mp4 в папке записи OBS;
-  2) переводит секунды в кадры по реальному FPS файла;
-  3) встраивает маркеры в MP4 в XMP (xmpDM:Tracks) через ExifTool;
-  4) сохраняет side-json рядом с видео: *.markers.json
+- OBS пишет MP4
+- во время записи ставим маркеры горячими клавишами
+- после Stop Recording:
+  - получаем путь к файлу через событие RecordStateChanged (outputPath)
+    (fallback: ищем самый новый mp4 в папке записи)
+  - переводим секунды в кадры по реальному FPS файла (ffprobe)
+  - встраиваем маркеры в MP4 через XMP (xmpDM:Tracks) используя ExifTool
+  - JSON со списком маркеров сохраняется во временную папку (TEMP)
+    и удаляется после успешного embed (если embed упал — JSON останется в TEMP)
 
-Горячие клавиши (по умолчанию):
-- F8      : toggle-сегмент (IN/OUT) -> маркер с duration (Segmentation)
-- Ctrl+F8 : точечный маркер (Comment)
+Hotkeys:
+  F8        - segment toggle (IN/OUT) -> Segmentation marker (duration)
+  Ctrl+F8   - point marker -> Comment marker
 
-Зависимости:
+Deps:
   pip install lxml pynput obsws-python
 
-В PATH должны быть:
-  - exiftool
-  - ffprobe (ffmpeg)
+Needs in PATH:
+  exiftool, ffprobe
 
-Запуск:
+Run:
   python obs_live_markers_embed.py --password "nikola3325tesla"
+or:
+  setx OBS_WS_PASSWORD "nikola3325tesla"
+  python obs_live_markers_embed.py
 """
 
 import os
@@ -36,13 +38,13 @@ import queue
 import argparse
 import threading
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Optional, List
 
 from lxml import etree
 from pynput import keyboard
-
 from obsws_python import ReqClient, EventClient
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -71,19 +73,6 @@ def exiftool_extract_xmp(video_path: str, exiftool: str = "exiftool") -> bytes:
     return r.stdout
 
 
-def xmp_extract_xmpmeta_only(xmp_packet: bytes) -> bytes:
-    """
-    Извлекаем ровно <x:xmpmeta>...</x:xmpmeta> из xpacket.
-    Это делает парсинг устойчивым к BOM/padding.
-    """
-    start = xmp_packet.find(b"<x:xmpmeta")
-    end = xmp_packet.rfind(b"</x:xmpmeta>")
-    if start == -1 or end == -1:
-        raise RuntimeError("Cannot find <x:xmpmeta> in extracted XMP")
-    end += len(b"</x:xmpmeta>")
-    return xmp_packet[start:end]
-
-
 def exiftool_embed_xmp(
     video_path: str, xmp_bytes: bytes, exiftool: str = "exiftool"
 ) -> None:
@@ -100,6 +89,44 @@ def exiftool_embed_xmp(
 
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip() or "ExifTool embed failed")
+
+
+def xmp_extract_xmpmeta_only(xmp_packet: bytes) -> Optional[bytes]:
+    """
+    Возвращает <x:xmpmeta>...</x:xmpmeta> из xpacket.
+    Если XMP отсутствует — вернёт None.
+    """
+    if not xmp_packet or not xmp_packet.strip():
+        return None
+    start = xmp_packet.find(b"<x:xmpmeta")
+    end = xmp_packet.rfind(b"</x:xmpmeta>")
+    if start == -1 or end == -1:
+        return None
+    end += len(b"</x:xmpmeta>")
+    return xmp_packet[start:end]
+
+
+def create_xmp_skeleton() -> etree._Element:
+    """
+    Если в MP4 нет XMP вообще — создаём минимальный корректный контейнер,
+    затем вставляем xmpDM:Tracks.
+    """
+    xmpmeta = etree.Element(
+        q("x", "xmpmeta"),
+        nsmap={
+            "x": NS["x"],
+            "rdf": NS["rdf"],
+            "xmp": NS["xmp"],
+            "xmpDM": NS["xmpDM"],
+            "xmpMM": NS["xmpMM"],
+        },
+    )
+    xmpmeta.set(q("x", "xmptk"), "Adobe XMP Core")
+
+    rdf = etree.SubElement(xmpmeta, q("rdf", "RDF"))
+    desc = etree.SubElement(rdf, q("rdf", "Description"))
+    desc.set(q("rdf", "about"), "")
+    return xmpmeta
 
 
 def ffprobe_fps_fraction(video_path: str) -> Fraction:
@@ -165,8 +192,8 @@ def build_tracks_element(
     markers: List[XmpMarker], frame_rate_code: str
 ) -> etree._Element:
     """
-    Делаем 1 track Comment (часто так делает Premiere),
-    а тип кладём в xmpDM:type только если != Comment.
+    Один track "Comment" (часто так делает Premiere),
+    а тип маркера, если надо, кладём в xmpDM:type.
     """
     tracks = etree.Element(q("xmpDM", "Tracks"))
     bag = etree.SubElement(tracks, q("rdf", "Bag"))
@@ -231,14 +258,21 @@ def replace_tracks_in_xmp(
     return xmpmeta
 
 
+def load_xmpmeta_or_create(video_path: str, exiftool: str) -> etree._Element:
+    pkt = exiftool_extract_xmp(video_path, exiftool=exiftool)
+    xmpmeta_bytes = xmp_extract_xmpmeta_only(pkt)
+
+    if xmpmeta_bytes is None:
+        return create_xmp_skeleton()
+
+    parser = etree.XMLParser(remove_blank_text=False, huge_tree=True)
+    return etree.fromstring(xmpmeta_bytes, parser=parser)
+
+
 def embed_markers_into_mp4(
     video_path: str, markers: List[XmpMarker], exiftool: str = "exiftool"
 ) -> None:
-    xmp_packet = exiftool_extract_xmp(video_path, exiftool=exiftool)
-    xmpmeta_bytes = xmp_extract_xmpmeta_only(xmp_packet)
-
-    parser = etree.XMLParser(remove_blank_text=False, huge_tree=True)
-    xmpmeta = etree.fromstring(xmpmeta_bytes, parser=parser)
+    xmpmeta = load_xmpmeta_or_create(video_path, exiftool=exiftool)
 
     fps = ffprobe_fps_fraction(video_path)
     fr_code = adobe_framerate_code(fps)
@@ -252,31 +286,19 @@ def embed_markers_into_mp4(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# OBS helpers (получение outputPath и fallback-поиск mp4)
+# OBS helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def parse_obs_timecode_to_seconds(tc: str) -> float:
-    """
-    OBS output_timecode обычно "HH:MM:SS.mmm".
-    Сделано устойчиво: поддерживает и "HH:MM:SS".
-    """
     try:
-        parts = tc.split(":")
-        if len(parts) != 3:
-            return 0.0
-        h = int(parts[0])
-        m = int(parts[1])
-        s = float(parts[2])  # "12.345" или "12"
-        return h * 3600 + m * 60 + s
+        h, m, s = tc.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(s)
     except Exception:
         return 0.0
 
 
 def wait_file_stable(path: str, timeout: float = 20.0) -> None:
-    """
-    Ждём, пока файл перестанет расти (для Windows/OBS полезно).
-    """
     t0 = time.time()
     last = -1
     stable = 0
@@ -307,7 +329,6 @@ def get_record_directory(obs_req) -> Optional[str]:
 def find_latest_mp4(record_dir: str, after_ts: float) -> Optional[str]:
     if not record_dir or not os.path.isdir(record_dir):
         return None
-
     candidates = []
     for name in os.listdir(record_dir):
         if not name.lower().endswith(".mp4"):
@@ -321,7 +342,6 @@ def find_latest_mp4(record_dir: str, after_ts: float) -> Optional[str]:
             continue
         if mtime >= after_ts:
             candidates.append((mtime, p))
-
     if not candidates:
         return None
     candidates.sort(reverse=True)
@@ -329,7 +349,7 @@ def find_latest_mp4(record_dir: str, after_ts: float) -> Optional[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Live markers (hotkeys → список маркеров в секундах)
+# Logged markers + temp JSON
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -340,6 +360,21 @@ class LoggedMarker:
     duration_sec: float = 0.0
     name: str = ""
     comment: str = ""
+
+
+def save_markers_json_temp(logged: List[LoggedMarker], video_path: str) -> str:
+    """
+    Сохраняет маркеры во временную папку. Удаляется после успешного embed.
+    Если embed упадёт — путь к JSON будет выведен, файл останется как бэкап.
+    """
+    base = os.path.splitext(os.path.basename(video_path))[0]
+    fname = f"{base}.{uuid.uuid4().hex}.markers.json"
+    path = os.path.join(tempfile.gettempdir(), fname)
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump([lm.__dict__ for lm in logged], f, ensure_ascii=False, indent=2)
+
+    return path
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -356,7 +391,7 @@ def main():
     ap.add_argument(
         "--no-embed",
         action="store_true",
-        help="Только сохранить JSON, не встраивать XMP",
+        help="Не встраивать XMP (оставить только temp JSON)",
     )
     args = ap.parse_args()
 
@@ -368,22 +403,16 @@ def main():
     obs_req = ReqClient(host=args.host, port=args.port, password=args.password)
     obs_evt = EventClient(host=args.host, port=args.port, password=args.password)
 
-    # Сюда придёт output_path при STOP из события RecordStateChanged
     stop_path_ready = threading.Event()
     last_stop_output_path = {"path": None}
 
-    def on_record_state_changed(data, *maybe_more):
-        # В разных версиях obsws-python сигнатуры могут отличаться,
-        # поэтому берём "data" и аккуратно читаем атрибуты.
+    def on_record_state_changed(data, *rest):
         state = getattr(data, "output_state", None)
         outp = getattr(data, "output_path", None)
-
         if state == "OBS_WEBSOCKET_OUTPUT_STOPPED" and outp:
             last_stop_output_path["path"] = outp
             stop_path_ready.set()
 
-    # Регистрируем callback (если библиотека поддерживает фильтр по имени события — хорошо;
-    # если нет — callback будет дергаться чаще, но наша проверка state всё отсечёт).
     try:
         obs_evt.callback.register(on_record_state_changed, "RecordStateChanged")
     except TypeError:
@@ -404,11 +433,9 @@ def main():
         if key in (keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
             ctrl_pressed["down"] = True
             return
-
         if key == keyboard.Key.f8 and ctrl_pressed["down"]:
             events_q.put(("point", time.monotonic()))
             return
-
         if key == keyboard.Key.f8 and not ctrl_pressed["down"]:
             events_q.put(("toggle", time.monotonic()))
             return
@@ -421,7 +448,7 @@ def main():
     listener.start()
 
     print("Горячие клавиши:")
-    print("  F8        — начать/закончить сегмент (Segmentation, с duration)")
+    print("  F8        — начать/закончить сегмент (Segmentation, duration)")
     print("  Ctrl+F8   — точечный маркер (Comment)")
     print("Ожидаю старт записи в OBS... (Ctrl+C чтобы выйти)\n")
 
@@ -436,7 +463,6 @@ def main():
                 elapsed = parse_obs_timecode_to_seconds(tc)
                 rec_start_mono = time.monotonic() - elapsed
                 rec_start_wall = time.time() - elapsed
-
                 record_dir = get_record_directory(obs_req)
 
                 logged = []
@@ -448,7 +474,7 @@ def main():
                 recording_active = True
                 print(f"[REC] started. dir={record_dir}")
 
-            # hotkeys → в маркеры
+            # hotkeys
             while not events_q.empty():
                 kind, t_mono = events_q.get_nowait()
                 if not recording_active or rec_start_mono is None:
@@ -488,12 +514,9 @@ def main():
             if not active and recording_active:
                 recording_active = False
 
-                # авто-закрытие сегмента
-                if rec_start_mono is not None:
-                    stop_rel = time.monotonic() - rec_start_mono
-                else:
-                    stop_rel = None
-
+                stop_rel = (
+                    (time.monotonic() - rec_start_mono) if rec_start_mono else None
+                )
                 if seg_open_t is not None and stop_rel is not None:
                     start = seg_open_t
                     dur = max(0.0, stop_rel - seg_open_t)
@@ -509,11 +532,11 @@ def main():
                     print(f"  [seg] auto-close at STOP (dur={dur:.3f}s)")
                     seg_open_t = None
 
-                # 1) пробуем взять путь из события
+                # 1) event outputPath
                 stop_path_ready.wait(timeout=4.0)
                 video_path = last_stop_output_path["path"]
 
-                # 2) fallback: ищем самый свежий mp4 в папке записи
+                # 2) fallback: latest mp4 in record dir
                 if (not video_path) and record_dir and rec_start_wall:
                     video_path = find_latest_mp4(
                         record_dir, after_ts=rec_start_wall - 2
@@ -524,18 +547,15 @@ def main():
                     print("Проверь OBS: Settings → Output → Recording Path.")
                     break
 
+                video_path = os.path.normpath(video_path)
                 print(f"[REC] stopped. file={video_path}")
 
-                # JSON рядом с видео
-                json_path = os.path.splitext(video_path)[0] + ".markers.json"
-                with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        [lm.__dict__ for lm in logged], f, ensure_ascii=False, indent=2
-                    )
-                print(f"JSON маркеров: {json_path}")
+                # temp JSON (бэкап)
+                json_path = save_markers_json_temp(logged, video_path)
+                print(f"Markers JSON (temp): {json_path}")
 
                 if args.no_embed:
-                    print("Встраивание отключено (--no-embed).")
+                    print("Embed отключён (--no-embed). JSON оставлен в TEMP.")
                     break
 
                 wait_file_stable(video_path)
@@ -561,15 +581,29 @@ def main():
                         )
                     )
 
-                embed_markers_into_mp4(video_path, xmp_markers, exiftool=args.exiftool)
-                print("OK: маркеры встроены в MP4. Импортируй файл в Premiere.")
+                try:
+                    embed_markers_into_mp4(
+                        video_path, xmp_markers, exiftool=args.exiftool
+                    )
+                    print("OK: маркеры встроены в MP4. Импортируй файл в Premiere.")
+
+                    # успех -> удаляем temp JSON
+                    try:
+                        os.remove(json_path)
+                    except OSError:
+                        pass
+
+                except Exception as e:
+                    print(f"ERROR: не удалось встроить маркеры: {e}")
+                    print(f"JSON оставлен в TEMP: {json_path}")
+                    raise
+
                 break
 
             time.sleep(0.2)
 
     except KeyboardInterrupt:
         print("\nExit.")
-
     finally:
         try:
             listener.stop()
