@@ -2,7 +2,7 @@ import os
 import re
 import yt_dlp
 
-URL = "https://www.youtube.com/watch?v=SKI6pf0gkNo"
+URL = "https://www.youtube.com/watch?v=8rYLZ5V_b3M"
 LANG = "ru"
 
 
@@ -57,7 +57,7 @@ ydl_opts = {
     "writeautomaticsub": True,  # авто
     "subtitleslangs": [LANG],
     "subtitlesformat": "srt",  # важно: srt/vtt удобнее парсить, чем "txt"
-    "outtmpl": "./data/%(title)s.%(ext)s",
+    "outtmpl": "./data/subtitles/%(title)s.%(ext)s",
     "quiet": True,
 }
 
