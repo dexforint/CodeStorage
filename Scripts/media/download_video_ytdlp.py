@@ -18,6 +18,22 @@ def download_youtube_video(url: str, output_dir: str = "./data/video"):
         ydl.download([url])
 
 
+def main():
+    url = input("Введите URL видео на YouTube: ").strip()
+    if not url:
+        print("Ошибка: URL не может быть пустым.")
+        return
+
+    output_dir = input(
+        "Введите папку для сохранения (по умолчанию ./data/video): "
+    ).strip()
+    if not output_dir:
+        output_dir = "./data/video"
+
+    print(f"Скачивание видео: {url}")
+    download_youtube_video(url, output_dir)
+    print("Готово!")
+
+
 if __name__ == "__main__":
-    video_url = "https://www.youtube.com/shorts/jWH3iPAE88k"
-    download_youtube_video(video_url)
+    main()
