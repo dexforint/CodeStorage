@@ -623,3 +623,13 @@ def codebase_folder_to_llm_text(
         f.write("\n".join(included_content_files).rstrip() + "\n")
 
     return part_paths, included_list_path
+
+
+if __name__ == "__main__":
+    codebase_folder_to_llm_text(
+        r"C:\Users\user\Downloads\SUTrack",
+        out_dir="./data/code",
+        allowed=["*.py", "*.md"],
+        max_output_chars=100_000,
+        # ignore_content=["*.txt", "*.ini"],
+    )
