@@ -21,4 +21,6 @@ response = client.chat(
 )
 
 print("Ответ модели:")
+print(response)
+print("###########")
 print(response["message"]["content"])
