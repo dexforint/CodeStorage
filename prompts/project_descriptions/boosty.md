@@ -30,6 +30,7 @@ Link: https://arena.ai/c/019f8e13-3e48-7b4c-8e86-ae9e0e9a1d7b
 
 - backend: FastAPI.
 - ORM: SQLModel.
+- Миграции: Alembic.
 - БД: PostgreSQL?
 - frontend: React. Но я не знаю что выбрать: Next.js или Vite.js, или что-то другое?
 - оформление: shadcn/ui + taildwinCSS?
