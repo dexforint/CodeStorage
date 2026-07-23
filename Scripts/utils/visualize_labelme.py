@@ -104,8 +104,8 @@ def visualize_detections(images_dir, annotations_dir, output_dir):
 
 # ================= ЗАПУСК =================
 if __name__ == "__main__":
-    IMAGES_DIR = "/kaggle/input/your_dataset/images"
-    ANNOTATIONS_DIR = "/kaggle/working/labelme_annotations"
-    OUTPUT_DIR = "/kaggle/working/visualized_images"
+    IMAGES_DIR = input("Images dir: ")
+    ANNOTATIONS_DIR = input("Labelme dir: ")
+    OUTPUT_DIR = input("Output dir: ")
 
     visualize_detections(IMAGES_DIR, ANNOTATIONS_DIR, OUTPUT_DIR)
