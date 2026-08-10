@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-api_key = os.getenv("AGENTROUTER_TOKEN")
+api_key = os.getenv("AGENTROUTER_TOKEN2")
 
 
 client = openai.OpenAI(base_url="https://agentrouter.org/v1", api_key=api_key)
