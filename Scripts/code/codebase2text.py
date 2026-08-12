@@ -626,10 +626,15 @@ def codebase_folder_to_llm_text(
 
 
 if __name__ == "__main__":
+    import shutil
+
+    shutil.rmtree("./data/code")
+
+    codebase_path = input("Путь к папке: ")
     codebase_folder_to_llm_text(
-        r"C:\Users\user\Downloads\SUTrack",
+        codebase_path,
         out_dir="./data/code",
-        allowed=["*.py", "*.md"],
+        # allowed=["*.py", "*.md", "*.json"],
         max_output_chars=100_000,
-        # ignore_content=["*.txt", "*.ini"],
+        ignore_content=["models/"],
     )
