@@ -5,7 +5,6 @@ from ultralytics import YOLO
 
 def visualize_custom_pose(
     image_path,
-    model_path,
     output_path="output.jpg",
     custom_skeleton=None,
     box_conf_threshold=0.5,
@@ -24,7 +23,7 @@ def visualize_custom_pose(
     :param draw_kp_numbers: Рисовать ли индексы (0, 1, 2...) рядом с точками для отладки
     """
     # 1. Загрузка модели и инференс
-    model = YOLO(model_path)
+
     img = cv2.imread(image_path)
 
     if img is None:
@@ -140,12 +139,15 @@ if __name__ == "__main__":
 
     # Если скелет не нужен, передай MY_SKELETON = None
 
-    model_path = "yolov8n-pose5_0.018.pt"
+    model_path = "data/yolov8n-pose5_v2.pt"
+    model_name = model_path.split("/")[-1]
+
+    model = YOLO(model_path)
+    model.fuse()  # !!!
 
     visualize_custom_pose(
-        image_path="image.png",  # Путь к картинке для теста
-        model_path=model_path,  # Путь к твоей обученной модели
-        output_path=f"{model_path}.jpg",  # Куда сохранить
+        image_path="data/test_dataset/37.png",  # Путь к картинке для теста
+        output_path=f"./data/trash/{model_name}.jpg",  # Куда сохранить
         custom_skeleton=MY_SKELETON,
         box_conf_threshold=0.5,  # Показываем детекции увереннее 50%
         kpt_conf_threshold=0.6,  # Рисуем точку, если модель уверена в ней на 60%
