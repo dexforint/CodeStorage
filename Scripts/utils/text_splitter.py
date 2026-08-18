@@ -69,6 +69,7 @@ PROMPTS = (
 
 CONTINUE_KEY = "continue"
 CONTINUE_PHRASES = (
+    "Хорошо, работай",
     "Двигайся дальше",
     "Работай дальше",
     "Переходи дальше",
