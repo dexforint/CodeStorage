@@ -28,6 +28,12 @@ def extract_from_epub(file_path: Path | str, output_path: Path | str | None = No
         md_elements.append(md)
 
     md_text: str = "\n".join(md_elements)
+
+    output_path_raw: Path = output_path.parent / f"{output_path.stem}_raw.md"
+
+    with open(output_path_raw, "w", encoding="utf-8") as file:
+        file.write(md_text)
+
     md_text: str = groom_markdown(md_text)
 
     with open(output_path, "w", encoding="utf-8") as file:
@@ -35,4 +41,5 @@ def extract_from_epub(file_path: Path | str, output_path: Path | str | None = No
 
 
 if __name__ == "__main__":
-    extract_from_epub(input("Введите путь до EPUB файла: "), "./data")
+    input_path = input("Введите путь до EPUB файла: ").replace('"', "")
+    extract_from_epub(input_path)
