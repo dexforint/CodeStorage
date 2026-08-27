@@ -25,4 +25,4 @@ def extract_from_pdf(pdf_file_path: Path | str, output_path: Path | str | None =
 
 
 if __name__ == "__main__":
-    extract_from_pdf(input("Введите путь до PDF файла: "), "./data")
+    extract_from_pdf(input("Введите путь до PDF файла: ").replace('"', ""))
