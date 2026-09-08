@@ -139,7 +139,7 @@ if __name__ == "__main__":
 
     # Если скелет не нужен, передай MY_SKELETON = None
 
-    model_path = "./data/yolov8n-pose5_0.006.pt"
+    model_path = "./data/yolov8n-pose5_0.01.pt"
 
     from glob import glob
     from tqdm.auto import tqdm
@@ -154,7 +154,7 @@ if __name__ == "__main__":
         visualize_custom_pose(
             image_path=img_path,  # Путь к картинке для теста
             model_path=model_path,  # Путь к твоей обученной модели
-            output_path=f"{img_folder}_pose5_results_modelv2/{img_name}",  # Куда сохранить
+            output_path=f"{img_folder}_pose5_results_tensorrt_int8/{img_name}",  # Куда сохранить
             custom_skeleton=MY_SKELETON,
             box_conf_threshold=0.5,  # Показываем детекции увереннее 50%
             kpt_conf_threshold=0.6,  # Рисуем точку, если модель уверена в ней на 60%

@@ -54,10 +54,10 @@ def add_noise_to_yolo_pose(model_path, save_path, noise_std=0.01, num_last_param
 # ==========================================
 if __name__ == "__main__":
     # 1. Модель (если файла нет локально, ultralytics скачает его автоматически)
-    INPUT_MODEL_PATH = "yolov8n-pose5.pt"
+    INPUT_MODEL_PATH = "./data/yolov8n-pose5.pt"
 
     # 3. Размер шума (чем больше, тем сильнее искажения)
-    NOISE_MAGNITUDE = 0.018
+    NOISE_MAGNITUDE = 0.01
 
     # 2. Имя файла для сохранения измененной модели
     OUTPUT_MODEL_PATH = f"yolov8n-pose5_{NOISE_MAGNITUDE}.pt"
