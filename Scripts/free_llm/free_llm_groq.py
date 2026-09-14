@@ -12,7 +12,8 @@ endpoint = "https://api.groq.com/openai/v1"
 model = "qwen/qwen3-32b"
 model = "moonshotai/kimi-k2-instruct"
 model = "moonshotai/kimi-k2-instruct-0905"
-# model = "openai/gpt-oss-120b"
+model = "openai/gpt-oss-120b"
+model = "qwen/qwen3.8-27b"
 
 # url = "https://api.groq.com/openai/v1/models"
 # headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}

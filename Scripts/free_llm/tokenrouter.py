@@ -20,7 +20,7 @@ messages = [
 ]
 
 resp = client.chat.completions.create(
-    model="z-ai/glm-5.2-free",
+    model="z-ai/glm-5.3-free",
     messages=[
         {
             "role": "user",

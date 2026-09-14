@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-api_key = os.getenv("GOOGLE_TOKEN")
+api_key = os.getenv("GOOGLE_TOKEN2")
 
 
 client = openai.OpenAI(

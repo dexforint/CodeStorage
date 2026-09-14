@@ -144,7 +144,7 @@ if __name__ == "__main__":
     from glob import glob
     from tqdm.auto import tqdm
 
-    img_folder = "./data/images/pose_samples"
+    img_folder = "./data/pedestrians_frames"
 
     img_paths = glob(f"{img_folder}/*")
     img_paths = [path.replace("\\", "/") for path in img_paths]

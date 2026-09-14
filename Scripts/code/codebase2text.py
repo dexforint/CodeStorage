@@ -636,5 +636,5 @@ if __name__ == "__main__":
         out_dir="./data/code",
         # allowed=["*.py", "*.md", "*.json"],
         max_output_chars=100_000,
-        ignore_content=["models/"],
+        # ignore_content=["models/"],
     )
