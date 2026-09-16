@@ -10,7 +10,7 @@ client = OpenAI(
 
 # Create a chat completion request
 response = client.chat.completions.create(
-    model="gpt-4o-mini",  # Specify the model to use
+    model="Groq:qwen/qwen3.8-27b",  # Specify the model to use
     messages=[
         {"role": "user", "content": "Write a poem about a tree"}
     ],  # Define the input message
