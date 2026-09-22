@@ -36,13 +36,18 @@ class Config:
 
 BASE_DIR = Path(__file__).resolve().parent
 
+source = input("Введите путь до папки с кодом: ").replace('"', "")
+source = Path(source)
+
+assert source.is_dir(), "Это должна быть папка!"
+
+source_folder_name = source.name
+
 CONFIG = Config(
-    source=Path(
-        "C:/Users/user/Documents/Projects/robotics/truetechchamp2026/stage1/task-2"
-    ),
-    output=Path("data/code/task2"),
+    source=source,
+    output=Path(f"data/code/{source_folder_name}"),
     # 0 — без ограничения.
-    max_chars=200_000,
+    max_chars=100_000,
     max_file_bytes=0,
     # ---------- Уровень 1: полное исключение ----------
     # Использовать корневой .gitignore для полного исключения.
@@ -50,12 +55,7 @@ CONFIG = Config(
     ignore_file=[
         # BASE_DIR / "my-project" / ".llmignore",
     ],
-    exclude=[
-        ".git/",
-        ".venv/",
-        "__pycache__/",
-        "node_modules/",
-    ],
+    exclude=[".git/", ".venv/", "__pycache__/", "node_modules/", "last_bugs.md"],
     # ------ Уровень 2: исключение содержимого ------
     content_ignore_file=[
         # BASE_DIR / "my-project" / ".llmcontentignore",
