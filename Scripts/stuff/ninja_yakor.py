@@ -9,6 +9,30 @@ from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "YakorDesigner"
 
+# Точное преобразование миллиметров в PDF points.
+MM_TO_PT = 72.0 / 25.4
+
+A4_SIZES_MM = {
+    "portrait": (210.0, 297.0),
+    "landscape": (297.0, 210.0),
+}
+
+ORIENTATION_LABELS = {
+    "auto": "Авто",
+    "portrait": "Портрет",
+    "landscape": "Альбомная",
+}
+LABEL_TO_ORIENTATION = {label: key for key, label in ORIENTATION_LABELS.items()}
+
+# В нижнем поле оставляется место для номера страницы и контрольной линейки.
+A4_FOOTER_BAND_MM = 18.0
+
+DEFAULT_PRINT_SETTINGS = {
+    "orientation": "auto",
+    "overlap": 10,
+    "margin": 10,
+}
+
 
 @dataclass(frozen=True)
 class ParamSpec:
@@ -83,13 +107,17 @@ def get_settings_path() -> Path:
 
 
 def fmt_number(value: float) -> str:
-    """Форматирует число без лишних нулей после запятой."""
+    """Форматирует число без лишних нулей."""
     text = f"{float(value):.6f}".rstrip("0").rstrip(".")
     return text if text not in ("", "-0") else "0"
 
 
 class GeometryError(Exception):
     """Параметры не позволяют построить корректный контур."""
+
+
+class A4LayoutError(Exception):
+    """Не удалось подобрать раскладку для печати A4."""
 
 
 @dataclass
@@ -122,7 +150,7 @@ def append_arc(
     end_angle: float,
     max_step_degrees: float = 1.0,
 ) -> None:
-    """Добавляет дугу в виде коротких отрезков."""
+    """Добавляет дугу как последовательность коротких отрезков."""
     if radius <= 1e-12:
         append_unique(points, (cx, cy))
         return
@@ -146,8 +174,8 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
     """
     Строит внешний контур детали и сквозные отверстия.
 
-    Координаты профиля:
-      x — от левого края;
+    Координаты:
+      x — от левого края детали;
       y — от верхней точки круглой площадки.
     """
     width = float(params["width"])
@@ -168,7 +196,6 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
     center_x = width / 2.0 + stem_offset
     center_y = radius
 
-    # Круглая площадка должна целиком помещаться по ширине детали.
     if center_x - radius < -1e-6 or center_x + radius > width + 1e-6:
         raise GeometryError(
             "Круглая площадка выходит за ширину детали. "
@@ -184,7 +211,7 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
 
     half_stem = stem_width / 2.0
 
-    if stem_width >= pad_diameter - 1.0:
+    if stem_width > pad_diameter:
         raise GeometryError(
             "Ширина стойки должна быть заметно меньше диаметра площадки."
         )
@@ -222,7 +249,6 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
             "Уменьшите ширину стойки/упоров или измените смещение."
         )
 
-    # Проверяем, не пересекаются ли высокие боковые упоры с круглой площадкой.
     left_ear_overlaps_pad = ear_width > center_x - radius + 1e-6
     right_ear_overlaps_pad = width - ear_width < center_x + radius - 1e-6
 
@@ -232,7 +258,6 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
             "Уменьшите высоту упоров или их ширину."
         )
 
-    # Ограничиваем радиусы размерами соответствующих участков.
     base_radius = min(
         float(params["base_corner_radius"]),
         base_height / 2.0,
@@ -249,7 +274,7 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
     def add(point):
         append_unique(points, point)
 
-    # Начинаем снизу слева и идём по внешнему периметру.
+    # Внешний периметр — старт снизу слева.
     add((base_radius, height))
     add((width - base_radius, height))
 
@@ -285,12 +310,12 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
         -math.pi,
     )
 
-    # Верх перекладины и правая сторона центральной стойки.
+    # Верх перекладины и правая сторона стойки.
     add((width - ear_width, base_top))
     add((stem_right, base_top))
     add((stem_right, join_y))
 
-    # Верхняя и боковые части круглой площадки.
+    # Дуга круглой площадки.
     alpha = math.atan2(neck_drop, half_stem)
     append_arc(
         points,
@@ -341,7 +366,6 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
     if len(points) < 3:
         raise GeometryError("Не удалось построить внешний контур.")
 
-    # Первое отверстие — центральное.
     holes = [(center_x, center_y, hole_diameter / 2.0)]
 
     if mount_holes_enabled:
@@ -362,7 +386,6 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
                 "Увеличьте PCD или уменьшите диаметры отверстий."
             )
 
-        # Четыре отверстия на окружности PCD.
         for angle_degrees in (0, 90, 180, 270):
             angle = math.radians(angle_degrees)
             x = center_x + pitch_radius * math.cos(angle)
@@ -379,7 +402,7 @@ def build_geometry(params: dict, mount_holes_enabled: bool) -> CutGeometry:
 
 
 def write_svg(path: Path, geometry: CutGeometry, params: dict) -> None:
-    """Экспортирует контур в SVG с размерами в миллиметрах."""
+    """Экспортирует контур в SVG, единицы — миллиметры."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
     path_data = (
@@ -429,7 +452,7 @@ def write_svg(path: Path, geometry: CutGeometry, params: dict) -> None:
 
 
 def write_dxf(path: Path, geometry: CutGeometry) -> None:
-    """Экспортирует контур в DXF R2000, единицы измерения — миллиметры."""
+    """Экспортирует контур в DXF R2000, единицы — миллиметры."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
     lines = [
@@ -539,18 +562,10 @@ def write_dxf(path: Path, geometry: CutGeometry) -> None:
         "1",
     ]
 
-    # В SVG ось Y направлена вниз, а в CAD — вверх.
-    # Преобразуем координаты, чтобы ориентация детали совпадала.
+    # В DXF ось Y направлена вверх, поэтому переворачиваем её.
     for x, y in geometry.outline:
         dxf_y = geometry.height - y
-        lines.extend(
-            [
-                "10",
-                fmt_number(x),
-                "20",
-                fmt_number(dxf_y),
-            ]
-        )
+        lines.extend(["10", fmt_number(x), "20", fmt_number(dxf_y)])
 
     for x, y, radius in geometry.holes:
         dxf_y = geometry.height - y
@@ -579,6 +594,432 @@ def write_dxf(path: Path, geometry: CutGeometry) -> None:
 
     with path.open("w", encoding="ascii", newline="\n") as file:
         file.write("\n".join(lines) + "\n")
+
+
+def _tile_count(length: float, usable_length: float, step: float) -> int:
+    """Количество листов, необходимое для покрытия размера детали."""
+    if length <= usable_length:
+        return 1
+
+    return max(
+        1,
+        int(math.ceil((length - usable_length) / step - 1e-12)) + 1,
+    )
+
+
+def calculate_a4_layout(
+    width: float,
+    height: float,
+    orientation: str,
+    overlap: float,
+    margin: float,
+) -> dict:
+    """Подбирает раскладку детали по страницам A4."""
+    if orientation not in ("auto", "portrait", "landscape"):
+        raise A4LayoutError("Неизвестная ориентация A4.")
+
+    if not 10 <= margin <= 25:
+        raise A4LayoutError("Поле листа должно быть от 10 до 25 мм.")
+
+    if not 5 <= overlap <= 30:
+        raise A4LayoutError("Перекрытие должно быть от 5 до 30 мм.")
+
+    def make_candidate(candidate_orientation: str) -> dict:
+        page_width, page_height = A4_SIZES_MM[candidate_orientation]
+
+        left_margin = margin
+        right_margin = margin
+        top_margin = margin
+        bottom_margin = max(margin, A4_FOOTER_BAND_MM)
+
+        usable_width = page_width - left_margin - right_margin
+        usable_height = page_height - top_margin - bottom_margin
+
+        if usable_width <= overlap or usable_height <= overlap:
+            raise A4LayoutError("Слишком большие поля или перекрытие для листа A4.")
+
+        step_x = usable_width - overlap
+        step_y = usable_height - overlap
+
+        columns = _tile_count(width, usable_width, step_x)
+        rows = _tile_count(height, usable_height, step_y)
+
+        return {
+            "orientation": candidate_orientation,
+            "page_width": page_width,
+            "page_height": page_height,
+            "left_margin": left_margin,
+            "right_margin": right_margin,
+            "top_margin": top_margin,
+            "bottom_margin": bottom_margin,
+            "usable_width": usable_width,
+            "usable_height": usable_height,
+            "overlap": overlap,
+            "step_x": step_x,
+            "step_y": step_y,
+            "columns": columns,
+            "rows": rows,
+            "total_pages": columns * rows,
+        }
+
+    if orientation != "auto":
+        return make_candidate(orientation)
+
+    candidates = [
+        make_candidate("portrait"),
+        make_candidate("landscape"),
+    ]
+
+    model_aspect = width / height
+
+    def score(layout: dict):
+        page_aspect = layout["usable_width"] / layout["usable_height"]
+        aspect_difference = abs(math.log(page_aspect / model_aspect))
+
+        # Сначала минимизируем количество листов, затем подбираем
+        # ориентацию, лучше соответствующую пропорциям детали.
+        return (
+            layout["total_pages"],
+            aspect_difference,
+            0 if layout["orientation"] == "landscape" else 1,
+        )
+
+    return min(candidates, key=score)
+
+
+def _pdf_circle_path(
+    commands: list,
+    cx: float,
+    cy: float,
+    radius: float,
+    close_and_stroke: bool = True,
+) -> None:
+    """Добавляет окружность в PDF как четыре кривые Безье."""
+    k = 0.5522847498307936 * radius
+
+    commands.append(f"{fmt_number(cx + radius)} {fmt_number(cy)} m")
+    commands.append(
+        f"{fmt_number(cx + radius)} {fmt_number(cy + k)} "
+        f"{fmt_number(cx + k)} {fmt_number(cy + radius)} "
+        f"{fmt_number(cx)} {fmt_number(cy + radius)} c"
+    )
+    commands.append(
+        f"{fmt_number(cx - k)} {fmt_number(cy + radius)} "
+        f"{fmt_number(cx - radius)} {fmt_number(cy + k)} "
+        f"{fmt_number(cx - radius)} {fmt_number(cy)} c"
+    )
+    commands.append(
+        f"{fmt_number(cx - radius)} {fmt_number(cy - k)} "
+        f"{fmt_number(cx - k)} {fmt_number(cy - radius)} "
+        f"{fmt_number(cx)} {fmt_number(cy - radius)} c"
+    )
+    commands.append(
+        f"{fmt_number(cx + k)} {fmt_number(cy - radius)} "
+        f"{fmt_number(cx + radius)} {fmt_number(cy - k)} "
+        f"{fmt_number(cx + radius)} {fmt_number(cy)} c"
+    )
+
+    if close_and_stroke:
+        commands.append("h S")
+
+
+def _pdf_escape_text(text: str) -> str:
+    """Экранирует строку для PDF."""
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _pdf_add_text(
+    commands: list,
+    text: str,
+    x_mm: float,
+    y_mm: float,
+    font_size: float = 8.0,
+) -> None:
+    """Добавляет простой текст в координатах страницы, заданных в мм."""
+    x_pt = x_mm * MM_TO_PT
+    y_pt = y_mm * MM_TO_PT
+    escaped = _pdf_escape_text(text)
+
+    commands.append(
+        f"BT /F1 {fmt_number(font_size)} Tf "
+        f"1 0 0 1 {fmt_number(x_pt)} {fmt_number(y_pt)} Tm "
+        f"({escaped}) Tj ET"
+    )
+
+
+def _make_pdf_page_content(
+    geometry: CutGeometry,
+    layout: dict,
+    tile_column: int,
+    tile_row: int,
+    page_number: int,
+) -> bytes:
+    """Создаёт PDF-команды для одной страницы A4."""
+    page_width = layout["page_width"]
+    page_height = layout["page_height"]
+    margin = layout["left_margin"]
+    bottom_margin = layout["bottom_margin"]
+    usable_width = layout["usable_width"]
+    usable_height = layout["usable_height"]
+    overlap = layout["overlap"]
+
+    tile_x = tile_column * layout["step_x"]
+    tile_y = tile_row * layout["step_y"]
+
+    commands = [
+        "q",
+        (
+            f"{fmt_number(margin * MM_TO_PT)} "
+            f"{fmt_number(bottom_margin * MM_TO_PT)} "
+            f"{fmt_number(usable_width * MM_TO_PT)} "
+            f"{fmt_number(usable_height * MM_TO_PT)} re W n"
+        ),
+    ]
+
+    # Переводим координаты модели в миллиметры страницы.
+    # Отражение Y компенсирует направление оси в PDF.
+    translate_x = (margin - tile_x) * MM_TO_PT
+    translate_y = (page_height - margin + tile_y) * MM_TO_PT
+
+    commands.extend(
+        [
+            (
+                f"{fmt_number(MM_TO_PT)} 0 0 "
+                f"{fmt_number(-MM_TO_PT)} "
+                f"{fmt_number(translate_x)} "
+                f"{fmt_number(translate_y)} cm"
+            ),
+            "0 0 0 RG",
+            "0.2 w",
+            "1 J",
+            "1 j",
+        ]
+    )
+
+    # Внешний контур детали.
+    first_x, first_y = geometry.outline[0]
+    commands.append(f"{fmt_number(first_x)} {fmt_number(first_y)} m")
+
+    for x, y in geometry.outline[1:]:
+        commands.append(f"{fmt_number(x)} {fmt_number(y)} l")
+
+    commands.append("h S")
+
+    # Сквозные отверстия.
+    for x, y, radius in geometry.holes:
+        _pdf_circle_path(commands, x, y, radius)
+
+    commands.append("Q")
+
+    # Метки для совмещения листов в зоне перекрытия.
+    registration_marks = []
+
+    if overlap > 0:
+        if tile_column > 0:
+            mark_x = tile_x + overlap / 2.0
+            for fraction in (0.25, 0.75):
+                registration_marks.append((mark_x, tile_y + usable_height * fraction))
+
+        if tile_column < layout["columns"] - 1:
+            mark_x = tile_x + usable_width - overlap / 2.0
+            for fraction in (0.25, 0.75):
+                registration_marks.append((mark_x, tile_y + usable_height * fraction))
+
+        if tile_row > 0:
+            mark_y = tile_y + overlap / 2.0
+            for fraction in (0.25, 0.75):
+                registration_marks.append((tile_x + usable_width * fraction, mark_y))
+
+        if tile_row < layout["rows"] - 1:
+            mark_y = tile_y + usable_height - overlap / 2.0
+            for fraction in (0.25, 0.75):
+                registration_marks.append((tile_x + usable_width * fraction, mark_y))
+
+    if registration_marks:
+        commands.extend(
+            [
+                "q",
+                "0.45 0.45 0.45 RG",
+                "0.15 w",
+                "1 J",
+                "1 j",
+            ]
+        )
+
+        half_size = 1.5
+        for global_x, global_y in registration_marks:
+            page_x = (margin + global_x - tile_x) * MM_TO_PT
+            page_y = (page_height - margin - global_y + tile_y) * MM_TO_PT
+            half_pt = half_size * MM_TO_PT
+
+            commands.append(
+                f"{fmt_number(page_x - half_pt)} {fmt_number(page_y)} m "
+                f"{fmt_number(page_x + half_pt)} {fmt_number(page_y)} l"
+            )
+            commands.append(
+                f"{fmt_number(page_x)} {fmt_number(page_y - half_pt)} m "
+                f"{fmt_number(page_x)} {fmt_number(page_y + half_pt)} l S"
+            )
+
+        commands.append("Q")
+
+    # Заголовок страницы находится в верхнем поле.
+    commands.append("0 0 0 rg")
+    _pdf_add_text(
+        commands,
+        (
+            f"MODEL {fmt_number(geometry.width)} x "
+            f"{fmt_number(geometry.height)} mm | "
+            "A4 TEMPLATE | PRINT AT 100%"
+        ),
+        margin,
+        page_height - 8.0,
+        8.0,
+    )
+
+    # Номер листа и его положение в сетке.
+    footer = (
+        f"PAGE {page_number}/{layout['total_pages']} | "
+        f"ROW {tile_row + 1}/{layout['rows']} | "
+        f"COL {tile_column + 1}/{layout['columns']} | "
+        f"OVERLAP {fmt_number(overlap)} mm"
+    )
+    _pdf_add_text(commands, footer, margin, 6.0, 7.0)
+
+    # На первой странице — контрольная линия длиной ровно 100 мм.
+    if page_number == 1:
+        bar_start = page_width - 110.0
+        bar_end = page_width - 10.0
+        bar_y = 7.5
+        tick_half_height = 1.5
+
+        commands.extend(
+            [
+                "0 0 0 RG",
+                "0.3 w",
+                (
+                    f"{fmt_number(bar_start * MM_TO_PT)} "
+                    f"{fmt_number(bar_y * MM_TO_PT)} m "
+                    f"{fmt_number(bar_end * MM_TO_PT)} "
+                    f"{fmt_number(bar_y * MM_TO_PT)} l"
+                ),
+                (
+                    f"{fmt_number(bar_start * MM_TO_PT)} "
+                    f"{fmt_number((bar_y - tick_half_height) * MM_TO_PT)} m "
+                    f"{fmt_number(bar_start * MM_TO_PT)} "
+                    f"{fmt_number((bar_y + tick_half_height) * MM_TO_PT)} l"
+                ),
+                (
+                    f"{fmt_number(bar_end * MM_TO_PT)} "
+                    f"{fmt_number((bar_y - tick_half_height) * MM_TO_PT)} m "
+                    f"{fmt_number(bar_end * MM_TO_PT)} "
+                    f"{fmt_number((bar_y + tick_half_height) * MM_TO_PT)} l S"
+                ),
+            ]
+        )
+
+        _pdf_add_text(
+            commands,
+            "CHECK: THIS LINE MUST MEASURE 100 mm",
+            bar_start,
+            12.0,
+            6.5,
+        )
+
+    return ("\n".join(commands) + "\n").encode("ascii")
+
+
+def write_tiled_pdf(
+    path: Path,
+    geometry: CutGeometry,
+    orientation: str,
+    overlap: int,
+    margin: int,
+) -> dict:
+    """Записывает многостраничный A4 PDF без сторонних библиотек."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    layout = calculate_a4_layout(
+        geometry.width,
+        geometry.height,
+        orientation,
+        overlap,
+        margin,
+    )
+
+    page_ids = [4 + 2 * index for index in range(layout["total_pages"])]
+    kids = " ".join(f"{page_id} 0 R" for page_id in page_ids)
+
+    objects = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: (
+            f"<< /Type /Pages /Kids [{kids}] " f"/Count {layout['total_pages']} >>"
+        ).encode("ascii"),
+        3: (
+            b"<< /Type /Font /Subtype /Type1 "
+            b"/BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+        ),
+    }
+
+    page_number = 0
+
+    for row in range(layout["rows"]):
+        for column in range(layout["columns"]):
+            page_number += 1
+            page_id = 4 + 2 * (page_number - 1)
+            stream_id = page_id + 1
+
+            content = _make_pdf_page_content(
+                geometry,
+                layout,
+                column,
+                row,
+                page_number,
+            )
+
+            page_width_pt = layout["page_width"] * MM_TO_PT
+            page_height_pt = layout["page_height"] * MM_TO_PT
+
+            objects[page_id] = (
+                f"<< /Type /Page /Parent 2 0 R "
+                f"/MediaBox [0 0 {fmt_number(page_width_pt)} "
+                f"{fmt_number(page_height_pt)}] "
+                f"/Resources << /Font << /F1 3 0 R >> >> "
+                f"/Contents {stream_id} 0 R >>"
+            ).encode("ascii")
+
+            objects[stream_id] = (
+                f"<< /Length {len(content)} >>\nstream\n".encode("ascii")
+                + content
+                + b"\nendstream"
+            )
+
+    max_object_id = max(objects)
+    pdf = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0] * (max_object_id + 1)
+
+    for object_id in range(1, max_object_id + 1):
+        offsets[object_id] = len(pdf)
+        pdf.extend(f"{object_id} 0 obj\n".encode("ascii"))
+        pdf.extend(objects[object_id])
+        pdf.extend(b"\nendobj\n")
+
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {max_object_id + 1}\n".encode("ascii"))
+    pdf.extend(b"0000000000 65535 f \n")
+
+    for object_id in range(1, max_object_id + 1):
+        pdf.extend(f"{offsets[object_id]:010d} 00000 n \n".encode("ascii"))
+
+    pdf.extend(
+        (
+            f"trailer\n<< /Size {max_object_id + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+
+    path.write_bytes(pdf)
+    return layout
 
 
 class ScrollableFrame(ttk.Frame):
@@ -638,6 +1079,7 @@ class ScrollableFrame(ttk.Frame):
             units = int(-event.delta / 120)
             if units == 0:
                 units = -1 if event.delta > 0 else 1
+
             self.canvas.yview_scroll(units, "units")
             return "break"
 
@@ -646,8 +1088,8 @@ class YakorDesignerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Якорь OCR — редактор контура")
-        self.root.geometry("1280x820")
-        self.root.minsize(1050, 700)
+        self.root.geometry("1320x850")
+        self.root.minsize(1080, 720)
 
         self.settings_path = get_settings_path()
         self._suspend_callbacks = True
@@ -657,8 +1099,23 @@ class YakorDesignerApp:
         self.parameter_vars = {
             spec.key: tk.IntVar(master=root, value=spec.default) for spec in ALL_SPECS
         }
+
         self.mount_holes_var = tk.BooleanVar(master=root, value=False)
 
+        self.print_orientation_var = tk.StringVar(
+            master=root,
+            value=ORIENTATION_LABELS["auto"],
+        )
+        self.print_overlap_var = tk.IntVar(
+            master=root,
+            value=DEFAULT_PRINT_SETTINGS["overlap"],
+        )
+        self.print_margin_var = tk.IntVar(
+            master=root,
+            value=DEFAULT_PRINT_SETTINGS["margin"],
+        )
+
+        self.last_print_options = DEFAULT_PRINT_SETTINGS.copy()
         self.current_geometry = None
         self.last_geometry = None
         self.current_params = None
@@ -668,8 +1125,10 @@ class YakorDesignerApp:
             master=root,
             value="Подготовка контура…",
         )
+
         self.mount_controls = []
         self.spinboxes = {}
+        self.print_spinboxes = {}
 
         self._load_settings()
         self._setup_style()
@@ -681,6 +1140,19 @@ class YakorDesignerApp:
         self.mount_holes_var.trace_add(
             "write",
             self._on_parameters_changed,
+        )
+
+        self.print_orientation_var.trace_add(
+            "write",
+            self._on_print_settings_changed,
+        )
+        self.print_overlap_var.trace_add(
+            "write",
+            self._on_print_settings_changed,
+        )
+        self.print_margin_var.trace_add(
+            "write",
+            self._on_print_settings_changed,
         )
 
         self._suspend_callbacks = False
@@ -741,13 +1213,44 @@ class YakorDesignerApp:
 
             self.mount_holes_var.set(bool(data.get("mount_holes_enabled", False)))
 
+            print_data = data.get("print", {})
+            if not isinstance(print_data, dict):
+                print_data = {}
+
+            orientation = print_data.get("orientation", "auto")
+            if orientation not in ORIENTATION_LABELS:
+                orientation = "auto"
+
+            try:
+                overlap = int(print_data.get("overlap", 10))
+            except (TypeError, ValueError, OverflowError):
+                overlap = 10
+
+            try:
+                margin = int(print_data.get("margin", 10))
+            except (TypeError, ValueError, OverflowError):
+                margin = 10
+
+            overlap = max(5, min(30, overlap))
+            margin = max(10, min(25, margin))
+
+            self.print_orientation_var.set(ORIENTATION_LABELS[orientation])
+            self.print_overlap_var.set(overlap)
+            self.print_margin_var.set(margin)
+
+            self.last_print_options = {
+                "orientation": orientation,
+                "overlap": overlap,
+                "margin": margin,
+            }
+
         except (
             OSError,
             json.JSONDecodeError,
             AttributeError,
             TypeError,
         ):
-            # При повреждённом файле настроек используем значения по умолчанию.
+            # При повреждённом файле запускаемся с исходными настройками.
             pass
 
     def _build_ui(self):
@@ -757,7 +1260,7 @@ class YakorDesignerApp:
         container.rowconfigure(0, weight=1)
 
         # Левая панель параметров.
-        self.left_panel = ttk.Frame(container, width=390)
+        self.left_panel = ttk.Frame(container, width=400)
         self.left_panel.grid(
             row=0,
             column=0,
@@ -796,17 +1299,17 @@ class YakorDesignerApp:
         )
         mount_group.pack(fill="x", padx=6, pady=5)
 
-        option_row = ttk.Frame(mount_group)
-        option_row.pack(fill="x", pady=(0, 5))
+        mount_option_row = ttk.Frame(mount_group)
+        mount_option_row.pack(fill="x", pady=(0, 5))
 
         ttk.Checkbutton(
-            option_row,
+            mount_option_row,
             text="Добавить 4 отверстия по PCD",
             variable=self.mount_holes_var,
         ).pack(side="left", fill="x", expand=True)
 
         ttk.Button(
-            option_row,
+            mount_option_row,
             text="Сброс",
             width=6,
             command=self._reset_mount_holes,
@@ -819,6 +1322,66 @@ class YakorDesignerApp:
                 is_mount_control=True,
             )
 
+        # Настройки разбиения на листы A4.
+        print_group = ttk.LabelFrame(
+            self.controls.inner,
+            text="Печать на листах A4",
+            padding=(8, 6),
+        )
+        print_group.pack(fill="x", padx=6, pady=5)
+
+        orientation_row = ttk.Frame(print_group)
+        orientation_row.pack(fill="x", pady=3)
+        orientation_row.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            orientation_row,
+            text="Ориентация листов",
+        ).grid(row=0, column=0, sticky="w")
+
+        ttk.Combobox(
+            orientation_row,
+            textvariable=self.print_orientation_var,
+            values=tuple(ORIENTATION_LABELS.values()),
+            state="readonly",
+            width=12,
+        ).grid(row=0, column=1, sticky="e", padx=(5, 0))
+
+        ttk.Button(
+            orientation_row,
+            text="Сброс",
+            width=6,
+            command=lambda: self._reset_print_setting("orientation"),
+        ).grid(row=0, column=2, sticky="e", padx=(5, 0))
+
+        self._add_print_numeric_control(
+            print_group,
+            "Перекрытие листов, мм",
+            "overlap",
+            5,
+            30,
+            self.print_overlap_var,
+        )
+        self._add_print_numeric_control(
+            print_group,
+            "Поле листа, мм",
+            "margin",
+            10,
+            25,
+            self.print_margin_var,
+        )
+
+        ttk.Label(
+            print_group,
+            text=(
+                "«Авто» выбирает ориентацию с меньшим числом листов. "
+                "Перекрытие удобно для склейки страниц."
+            ),
+            wraplength=355,
+            justify="left",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
+
         ttk.Button(
             self.left_panel,
             text="Сбросить все параметры",
@@ -828,7 +1391,7 @@ class YakorDesignerApp:
         ttk.Label(
             self.left_panel,
             text=("Автосохранение настроек:\n" f"{self.settings_path}"),
-            wraplength=365,
+            wraplength=375,
             justify="left",
             style="Subtitle.TLabel",
         ).grid(row=3, column=0, sticky="w", pady=(3, 2))
@@ -870,7 +1433,7 @@ class YakorDesignerApp:
             self.right_panel,
             textvariable=self.status_var,
             style="Info.TLabel",
-            wraplength=820,
+            wraplength=850,
             justify="left",
         )
         self.status_label.grid(
@@ -883,11 +1446,12 @@ class YakorDesignerApp:
         ttk.Label(
             self.right_panel,
             text=(
-                "Экспортируется 2D-контур для раскроя. "
-                "Толщина фанеры сохраняется как справочная информация "
-                "и не меняет форму плоского контура."
+                "Для A4 PDF печатайте на бумаге A4 в масштабе "
+                "«Фактический размер» / 100%, без «Вписать в страницу». "
+                "Совместите серые кресты и склейте листы с обратной стороны. "
+                "На первой странице есть контрольная линия 100 мм."
             ),
-            wraplength=820,
+            wraplength=850,
             justify="left",
             style="Subtitle.TLabel",
         ).grid(row=3, column=0, sticky="ew", pady=(0, 8))
@@ -909,7 +1473,15 @@ class YakorDesignerApp:
             command=self._export_dxf,
             state=tk.DISABLED,
         )
-        self.dxf_button.pack(side="left")
+        self.dxf_button.pack(side="left", padx=(0, 7))
+
+        self.a4_button = ttk.Button(
+            buttons,
+            text="Экспорт A4 PDF",
+            command=self._export_a4_pdf,
+            state=tk.DISABLED,
+        )
+        self.a4_button.pack(side="left")
 
     def _add_parameter_control(
         self,
@@ -948,7 +1520,7 @@ class YakorDesignerApp:
         )
         self.spinboxes[spec.key] = spinbox
 
-        # Сбрасывает только этот параметр, не затрагивая остальные.
+        # Сбрасывает только этот параметр.
         ttk.Button(
             block,
             text="Сброс",
@@ -981,9 +1553,55 @@ class YakorDesignerApp:
         )
 
         if is_mount_control:
-            # Ползунки и поля фланца включаются только вместе с опцией.
-            # Кнопки индивидуального сброса остаются доступными.
+            # Поле и ползунок отключаются вместе с опцией отверстий.
+            # Кнопка сброса отдельного параметра остаётся доступной.
             self.mount_controls.extend([spinbox, scale])
+
+    def _add_print_numeric_control(
+        self,
+        parent,
+        label: str,
+        key: str,
+        minimum: int,
+        maximum: int,
+        variable: tk.IntVar,
+    ):
+        row = ttk.Frame(parent)
+        row.pack(fill="x", pady=3)
+        row.columnconfigure(0, weight=1)
+
+        ttk.Label(row, text=label).grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+
+        spinbox = ttk.Spinbox(
+            row,
+            from_=minimum,
+            to=maximum,
+            increment=1,
+            textvariable=variable,
+            width=7,
+            justify="right",
+        )
+        spinbox.grid(row=0, column=1, sticky="e", padx=(5, 0))
+        spinbox.bind(
+            "<FocusOut>",
+            lambda _event, setting_key=key: self._commit_print_spinbox(setting_key),
+        )
+        spinbox.bind(
+            "<Return>",
+            lambda _event, setting_key=key: self._commit_print_spinbox(setting_key),
+        )
+        self.print_spinboxes[key] = spinbox
+
+        ttk.Button(
+            row,
+            text="Сброс",
+            width=6,
+            command=lambda setting_key=key: self._reset_print_setting(setting_key),
+        ).grid(row=0, column=2, sticky="e", padx=(5, 0))
 
     def _commit_spinbox(self, key: str):
         try:
@@ -1024,6 +1642,38 @@ class YakorDesignerApp:
 
         return values
 
+    def _read_print_options(self) -> dict:
+        label = self.print_orientation_var.get()
+        orientation = LABEL_TO_ORIENTATION.get(label, "auto")
+
+        overlap = int(self.print_overlap_var.get())
+        margin = int(self.print_margin_var.get())
+
+        bounded_overlap = max(5, min(30, overlap))
+        bounded_margin = max(10, min(25, margin))
+
+        corrections_needed = (
+            orientation != LABEL_TO_ORIENTATION.get(label, "auto")
+            or bounded_overlap != overlap
+            or bounded_margin != margin
+            or label not in LABEL_TO_ORIENTATION
+        )
+
+        if corrections_needed:
+            self._suspend_callbacks = True
+            try:
+                self.print_orientation_var.set(ORIENTATION_LABELS[orientation])
+                self.print_overlap_var.set(bounded_overlap)
+                self.print_margin_var.set(bounded_margin)
+            finally:
+                self._suspend_callbacks = False
+
+        return {
+            "orientation": orientation,
+            "overlap": bounded_overlap,
+            "margin": bounded_margin,
+        }
+
     def _set_mount_controls_state(self):
         state = tk.NORMAL if self.mount_holes_var.get() else tk.DISABLED
 
@@ -1034,6 +1684,7 @@ class YakorDesignerApp:
         state = tk.NORMAL if enabled else tk.DISABLED
         self.svg_button.configure(state=state)
         self.dxf_button.configure(state=state)
+        self.a4_button.configure(state=state)
 
     def _set_status(self, text: str, kind: str = "info"):
         self.status_var.set(text)
@@ -1045,6 +1696,37 @@ class YakorDesignerApp:
         }.get(kind, "Info.TLabel")
 
         self.status_label.configure(style=style)
+
+    def _ready_status_text(self) -> str:
+        params = self.current_params
+
+        base = (
+            f"Готово: {params['width']} × {params['height']} мм; "
+            f"фанера {params['material_thickness']} мм; "
+            f"центральное отверстие Ø{params['hole_diameter']} мм."
+        )
+
+        try:
+            print_options = self._read_print_options()
+            layout = calculate_a4_layout(
+                params["width"],
+                params["height"],
+                print_options["orientation"],
+                print_options["overlap"],
+                print_options["margin"],
+            )
+        except (tk.TclError, ValueError, A4LayoutError):
+            return base
+
+        orientation_text = (
+            "альбомная" if layout["orientation"] == "landscape" else "портретная"
+        )
+
+        return (
+            f"{base} A4 PDF: {layout['total_pages']} листов, "
+            f"{orientation_text}, перекрытие "
+            f"{fmt_number(print_options['overlap'])} мм."
+        )
 
     def _on_parameters_changed(self, *_args):
         if self._suspend_callbacks or self._closed:
@@ -1083,15 +1765,25 @@ class YakorDesignerApp:
         else:
             self.last_geometry = self.current_geometry
             self._set_export_state(True)
-            self._set_status(
-                f"Готово: {params['width']} × {params['height']} мм; "
-                f"фанера {params['material_thickness']} мм; "
-                f"центральное отверстие Ø{params['hole_diameter']} мм.",
-                "info",
-            )
+            self._set_status(self._ready_status_text(), "info")
 
         self._schedule_save()
         self._draw_preview()
+
+    def _on_print_settings_changed(self, *_args):
+        if self._suspend_callbacks or self._closed:
+            return
+
+        try:
+            self.last_print_options = self._read_print_options()
+        except (tk.TclError, ValueError, TypeError, OverflowError):
+            # Например, пользователь временно очистил поле ввода.
+            return
+
+        self._schedule_save()
+
+        if self.current_geometry is not None:
+            self._set_status(self._ready_status_text(), "info")
 
     def _draw_preview(self):
         if not hasattr(self, "preview_canvas"):
@@ -1302,10 +1994,16 @@ class YakorDesignerApp:
         except (tk.TclError, ValueError, TypeError, OverflowError):
             return False
 
+        try:
+            print_options = self._read_print_options()
+        except (tk.TclError, ValueError, TypeError, OverflowError):
+            print_options = self.last_print_options.copy()
+
         data = {
-            "version": 1,
+            "version": 2,
             "parameters": params,
             "mount_holes_enabled": bool(self.mount_holes_var.get()),
+            "print": print_options,
         }
 
         try:
@@ -1333,7 +2031,7 @@ class YakorDesignerApp:
         return True
 
     def _reset_parameter(self, key: str):
-        """Сбрасывает только один параметр к значению по умолчанию."""
+        """Сбрасывает один параметр к исходному значению."""
         spec = SPEC_BY_KEY[key]
 
         self._suspend_callbacks = True
@@ -1354,11 +2052,49 @@ class YakorDesignerApp:
 
         self._on_parameters_changed()
 
+    def _commit_print_spinbox(self, key: str):
+        variable = self.print_overlap_var if key == "overlap" else self.print_margin_var
+
+        try:
+            value = int(variable.get())
+        except (tk.TclError, ValueError, TypeError):
+            value = int(self.last_print_options.get(key, 10))
+
+        if key == "overlap":
+            value = max(5, min(30, value))
+        else:
+            value = max(10, min(25, value))
+
+        self._suspend_callbacks = True
+        try:
+            variable.set(value)
+        finally:
+            self._suspend_callbacks = False
+
+        self._on_print_settings_changed()
+
+    def _reset_print_setting(self, key: str):
+        """Сбрасывает одну настройку печати."""
+        self._suspend_callbacks = True
+        try:
+            if key == "orientation":
+                self.print_orientation_var.set(
+                    ORIENTATION_LABELS[DEFAULT_PRINT_SETTINGS["orientation"]]
+                )
+            elif key == "overlap":
+                self.print_overlap_var.set(DEFAULT_PRINT_SETTINGS["overlap"])
+            elif key == "margin":
+                self.print_margin_var.set(DEFAULT_PRINT_SETTINGS["margin"])
+        finally:
+            self._suspend_callbacks = False
+
+        self._on_print_settings_changed()
+
     def _reset_defaults(self):
-        """Сбрасывает все параметры к исходным значениям."""
+        """Сбрасывает параметры детали и печати."""
         confirmed = messagebox.askyesno(
             "Сброс параметров",
-            "Вернуть все значения к исходным?",
+            "Вернуть параметры детали и печати к исходным?",
             parent=self.root,
         )
 
@@ -1371,6 +2107,12 @@ class YakorDesignerApp:
                 self.parameter_vars[spec.key].set(spec.default)
 
             self.mount_holes_var.set(False)
+
+            self.print_orientation_var.set(
+                ORIENTATION_LABELS[DEFAULT_PRINT_SETTINGS["orientation"]]
+            )
+            self.print_overlap_var.set(DEFAULT_PRINT_SETTINGS["overlap"])
+            self.print_margin_var.set(DEFAULT_PRINT_SETTINGS["margin"])
         finally:
             self._suspend_callbacks = False
 
@@ -1406,10 +2148,7 @@ class YakorDesignerApp:
             )
             return
 
-        self._set_status(
-            f"SVG экспортирован: {path}",
-            "success",
-        )
+        self._set_status(f"SVG экспортирован: {path}", "success")
 
     def _export_dxf(self):
         if self.current_geometry is None:
@@ -1441,8 +2180,62 @@ class YakorDesignerApp:
             )
             return
 
+        self._set_status(f"DXF экспортирован: {path}", "success")
+
+    def _export_a4_pdf(self):
+        if self.current_geometry is None:
+            return
+
+        try:
+            print_options = self._read_print_options()
+        except (tk.TclError, ValueError, TypeError, OverflowError) as error:
+            messagebox.showerror(
+                "Ошибка параметров печати",
+                f"Проверьте настройки A4:\n{error}",
+                parent=self.root,
+            )
+            return
+
+        filename = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Экспорт выкройки на листах A4",
+            initialdir=str(Path.home()),
+            initialfile="yakor_A4.pdf",
+            defaultextension=".pdf",
+            filetypes=[("PDF-файл", "*.pdf")],
+        )
+
+        if not filename:
+            return
+
+        path = Path(filename)
+        if path.suffix.lower() != ".pdf":
+            path = path.with_suffix(".pdf")
+
+        try:
+            layout = write_tiled_pdf(
+                path,
+                self.current_geometry,
+                print_options["orientation"],
+                print_options["overlap"],
+                print_options["margin"],
+            )
+        except (OSError, A4LayoutError, ValueError) as error:
+            messagebox.showerror(
+                "Ошибка экспорта",
+                f"Не удалось создать A4 PDF:\n{error}",
+                parent=self.root,
+            )
+            return
+
+        orientation_text = (
+            "альбомная" if layout["orientation"] == "landscape" else "портретная"
+        )
+
         self._set_status(
-            f"DXF экспортирован: {path}",
+            f"A4 PDF экспортирован: {path}. "
+            f"Листов: {layout['total_pages']}, "
+            f"ориентация: {orientation_text}.",
             "success",
         )
 
